@@ -197,6 +197,20 @@ export async function retrieveContext(question: string, topK = 5): Promise<ChatS
 
   if (!index.chunks.length) return [];
 
+  if (isBroadKnowledgeQuestion(question)) {
+    return index.documents
+      .filter((document) => document.status === "indexed")
+      .slice(0, topK)
+      .map((document) => {
+        const documentChunks = index.chunks.filter((chunk) => chunk.fileName === document.fileName);
+        return {
+          fileName: document.fileName,
+          snippet: documentChunks.map((chunk) => chunk.chunkText).join(" ").slice(0, 900),
+          score: 1
+        };
+      });
+  }
+
   const questionVector = embedText(expandQuestion(question));
   const ranked = index.chunks
     .map((chunk) => ({ ...chunk, score: cosine(questionVector, chunk.embedding) }))
@@ -223,6 +237,9 @@ export async function answerWithAi(question: string, sources: ChatSource[]) {
 
   const countAnswer = await answerPlayerCountQuestion(question);
   if (countAnswer) return countAnswer;
+
+  const overviewAnswer = await answerBroadKnowledgeQuestion(question);
+  if (overviewAnswer) return overviewAnswer;
 
   if (!sources.length) {
     return { answer: NO_ANSWER, sources: [] };
@@ -266,6 +283,46 @@ export async function answerWithAi(question: string, sources: ChatSource[]) {
   };
 }
 
+async function answerBroadKnowledgeQuestion(question: string) {
+  if (!isBroadKnowledgeQuestion(question)) return null;
+
+  const index = await readOrIngestVectorIndex();
+  const indexedDocuments = index.documents.filter((document) => document.status === "indexed");
+
+  if (!indexedDocuments.length) return null;
+
+  const playerSummary = await getPlayerDocumentSummary();
+  const documentList = indexedDocuments
+    .map((document) => `- ${document.fileName} (${document.fileType})`)
+    .join("\n");
+  const topics = summarizeTopics(index.chunks);
+  const playerLine = playerSummary
+    ? `\n\nPlayer registration summary: ${playerSummary.total} registered player${playerSummary.total === 1 ? "" : "s"} found in ${playerSummary.files.join(", ")}.`
+    : "";
+
+  return {
+    answer: [
+      "Here is what I currently know from the uploaded league documents:",
+      "",
+      documentList,
+      playerLine,
+      topics ? `\nMain information available: ${topics}.` : "",
+      "",
+      "Ask me a specific question about any of these documents and I can give a more focused answer with sources."
+    ]
+      .filter(Boolean)
+      .join("\n"),
+    sources: indexedDocuments.map((document) => ({
+      fileName: document.fileName,
+      snippet: index.chunks
+        .filter((chunk) => chunk.fileName === document.fileName)
+        .map((chunk) => chunk.chunkText)
+        .join(" ")
+        .slice(0, 700)
+    }))
+  };
+}
+
 async function readVectorIndex(): Promise<VectorIndex> {
   await ensureKnowledgeBase();
   try {
@@ -274,6 +331,15 @@ async function readVectorIndex(): Promise<VectorIndex> {
   } catch {
     return { generatedAt: "", documents: [], chunks: [] };
   }
+}
+
+async function readOrIngestVectorIndex(): Promise<VectorIndex> {
+  let index = await readVectorIndex();
+  const files = await listKnowledgeFiles();
+  if (!index.generatedAt || index.chunks.length === 0 || files.length !== index.documents.length) {
+    index = await ingestKnowledgeBase();
+  }
+  return index;
 }
 
 async function listFilesInDir(directory: string) {
@@ -348,6 +414,42 @@ async function answerPlayerCountQuestion(question: string) {
   };
 }
 
+async function getPlayerDocumentSummary() {
+  const files = await listKnowledgeFiles();
+  const csvFiles = files.filter((filePath) => path.extname(filePath).toLowerCase() === ".csv");
+  const playerDocuments = [];
+
+  for (const filePath of csvFiles) {
+    const buffer = await fs.readFile(filePath);
+    const rows = parseCsvSync(buffer.toString("utf8"), {
+      columns: true,
+      skip_empty_lines: true,
+      trim: true
+    }) as Record<string, string>[];
+    const headers = Object.keys(rows[0] ?? {}).join(" ");
+    const fileName = path.basename(filePath);
+
+    if (rows.length && isPlayerDocument(`${fileName} ${headers}`)) {
+      playerDocuments.push({ fileName, count: rows.length });
+    }
+  }
+
+  if (!playerDocuments.length) return null;
+
+  return {
+    total: playerDocuments.reduce((sum, document) => sum + document.count, 0),
+    files: playerDocuments.map((document) => document.fileName)
+  };
+}
+
+function isBroadKnowledgeQuestion(question: string) {
+  const normalized = question.toLowerCase().replace(/[^\p{L}\p{N}\s]/gu, " ").replace(/\s+/g, " ").trim();
+  return (
+    /\b(tell me everything|everything you know|what do you know|what information do you have|summarize|summary|overview)\b/i.test(normalized) ||
+    /^(tell me about the league|tell me about eaba|league info|league information)$/i.test(normalized)
+  );
+}
+
 function isPlayerQuestion(question: string) {
   return /\b(player|players|registered|registration|roster|team|teams|jersey)\b/i.test(question);
 }
@@ -361,6 +463,22 @@ function isPlayerCountQuestion(question: string) {
 
 function isPlayerDocument(value: string) {
   return /\b(player|players|registration|registered|birth|jersey|position|team)\b/i.test(value);
+}
+
+function summarizeTopics(chunks: SourceChunk[]) {
+  const text = chunks.map((chunk) => `${chunk.fileName} ${chunk.chunkText}`).join(" ").toLowerCase();
+  const topics = [
+    ["registered players", /\b(player|players|registration|registered|birth|jersey|position)\b/],
+    ["teams", /\b(team|teams)\b/],
+    ["schedules", /\b(schedule|game date|time|venue|court)\b/],
+    ["results", /\b(result|score|won|winner|loss)\b/],
+    ["rules and policies", /\b(rule|rules|policy|eligibility|protest)\b/],
+    ["announcements", /\b(announcement|notice|update)\b/]
+  ]
+    .filter(([, pattern]) => (pattern as RegExp).test(text))
+    .map(([label]) => label);
+
+  return topics.join(", ");
 }
 
 function expandQuestion(question: string) {
