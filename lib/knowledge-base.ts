@@ -37,7 +37,9 @@ export type ChatSource = {
 
 const ROOT = process.cwd();
 export const KNOWLEDGE_BASE_DIR = path.join(ROOT, "public", "knowledge-base");
-export const DATA_DIR = path.join(ROOT, ".data");
+const WRITABLE_ROOT = process.env.VERCEL ? "/tmp/eaba-ai-chat" : path.join(ROOT, ".data");
+export const DATA_DIR = WRITABLE_ROOT;
+export const UPLOADS_DIR = path.join(WRITABLE_ROOT, "knowledge-base");
 export const VECTOR_INDEX_PATH = path.join(DATA_DIR, "vector-index.json");
 const SUPPORTED_EXTENSIONS = new Set([".pdf", ".docx", ".txt", ".md", ".markdown", ".csv", ".json"]);
 const VECTOR_SIZE = 256;
@@ -50,14 +52,19 @@ export function noAnswerMessage() {
 export async function ensureKnowledgeBase() {
   await fs.mkdir(KNOWLEDGE_BASE_DIR, { recursive: true });
   await fs.mkdir(DATA_DIR, { recursive: true });
+  await fs.mkdir(UPLOADS_DIR, { recursive: true });
 }
 
 export async function listKnowledgeFiles() {
   await ensureKnowledgeBase();
-  const entries = await fs.readdir(KNOWLEDGE_BASE_DIR, { withFileTypes: true });
-  return entries
-    .filter((entry) => entry.isFile() && SUPPORTED_EXTENSIONS.has(path.extname(entry.name).toLowerCase()))
-    .map((entry) => path.join(KNOWLEDGE_BASE_DIR, entry.name))
+  const entries = await Promise.all([listFilesInDir(KNOWLEDGE_BASE_DIR), listFilesInDir(UPLOADS_DIR)]);
+  const uniqueFiles = new Map<string, string>();
+
+  for (const filePath of entries.flat()) {
+    uniqueFiles.set(path.basename(filePath), filePath);
+  }
+
+  return [...uniqueFiles.values()]
     .sort((a, b) => a.localeCompare(b));
 }
 
@@ -203,6 +210,17 @@ async function readVectorIndex(): Promise<VectorIndex> {
     return JSON.parse(raw) as VectorIndex;
   } catch {
     return { generatedAt: "", documents: [], chunks: [] };
+  }
+}
+
+async function listFilesInDir(directory: string) {
+  try {
+    const entries = await fs.readdir(directory, { withFileTypes: true });
+    return entries
+      .filter((entry) => entry.isFile() && SUPPORTED_EXTENSIONS.has(path.extname(entry.name).toLowerCase()))
+      .map((entry) => path.join(directory, entry.name));
+  } catch {
+    return [];
   }
 }
 

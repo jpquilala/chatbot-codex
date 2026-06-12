@@ -1,7 +1,7 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 import { NextResponse } from "next/server";
-import { KNOWLEDGE_BASE_DIR, ensureKnowledgeBase, ingestKnowledgeBase } from "@/lib/knowledge-base";
+import { UPLOADS_DIR, ensureKnowledgeBase, ingestKnowledgeBase } from "@/lib/knowledge-base";
 
 export const dynamic = "force-dynamic";
 
@@ -31,7 +31,7 @@ export async function POST(request: Request) {
       .replace(/\s+/g, "-")
       .slice(0, 80) || "league-document";
     const safeName = `${safeBase}-${Date.now()}${ext}`;
-    const destination = path.join(KNOWLEDGE_BASE_DIR, safeName);
+    const destination = path.join(UPLOADS_DIR, safeName);
     const bytes = new Uint8Array(await file.arrayBuffer());
     await fs.writeFile(destination, bytes);
 
