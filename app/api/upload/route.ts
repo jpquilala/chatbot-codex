@@ -32,7 +32,7 @@ export async function POST(request: Request) {
       .slice(0, 80) || "league-document";
     const safeName = `${safeBase}-${Date.now()}${ext}`;
     const destination = path.join(KNOWLEDGE_BASE_DIR, safeName);
-    const bytes = Buffer.from(await file.arrayBuffer());
+    const bytes = new Uint8Array(await file.arrayBuffer());
     await fs.writeFile(destination, bytes);
 
     const index = await ingestKnowledgeBase();
